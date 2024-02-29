@@ -1,0 +1,21 @@
+{% extends 'base.html'%}
+
+{% block head %}
+    <title>Home</title>
+{% endblock %}
+
+{% block body %}
+    <h1>Templates</h1>
+    <p>Welcome to the home page</p>
+    <h2>About Movies</h2>
+    <p>Here you can search for movies and actors</p>
+    <h2>Search for an actor</h2>
+    <p>Enter the name of an actor to find out which movies they have been in</p>
+    <div>
+        <form action="/" methods="POST">
+            <input type="text" name="name" placeholder="Enter an actor">
+            <input type="submit" value="Submit">
+        </form>
+    </div>
+{% endblock %}
+```
