@@ -4,6 +4,7 @@ import datetime
 from flask_marshmallow import Marshmallow
 from flask_cors import CORS
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 
 app = Flask(__name__)
@@ -80,24 +81,29 @@ class FilmSchema(ma.Schema):
 film_schema = FilmSchema()
 films_schema = FilmSchema(many=True)
 
+from sqlalchemy import LargeBinary
+
 class Address(db.Model):
     __tablename__ = 'address'
+
     address_id = db.Column(db.Integer, primary_key=True)
-    address = db.Column(db.String(50))
-    address2 = db.Column(db.String(50))
+    address = db.Column(db.String(255))
+    address2 = db.Column(db.String(255))
     district = db.Column(db.String(20))
-    city_id = db.Column(db.Integer)
+    city_id = db.Column(db.Integer, db.ForeignKey('city.city_id'))
     postal_code = db.Column(db.String(10))
     phone = db.Column(db.String(20))
     last_update = db.Column(db.DateTime, default=datetime.datetime.now)
 
-    def __init__(self,address,address2,district,city_id,postal_code,phone):
+    def __init__(self, address, address2, district, city_id, postal_code, phone):
         self.address = address
         self.address2 = address2
         self.district = district
         self.city_id = city_id
         self.postal_code = postal_code
         self.phone = phone
+
+
 
 
 class Customer(db.Model):
@@ -311,9 +317,7 @@ def listusers():
     
     return jsonify(result)
 
-from sqlalchemy import text
-
-@app.route('/listuser/<customer_id>', methods=['GET'])
+@app.route('/listuser/<customer_id>', methods=['GET']) 
 def list_user(customer_id):
     # Execute the SQL query to retrieve user details along with their currently rented DVDs
     query_result = db.session.execute(text('''
@@ -331,30 +335,42 @@ def list_user(customer_id):
 
     # Fetch the user details and rented DVDs from the query result
     user = query_result.fetchone()
+    rented_dvds = []
 
     # If user exists, create a dictionary to store user details along with their rented DVDs
     if user:
-        rented_dvds = []
+
         if user.rented_dvds:
             for dvd in user.rented_dvds.split(','):
                 film_id, title = dvd.split(':')
                 rented_dvds.append({'film_id': film_id, 'title': title})
 
-        user_details = {
+            
+
+        # Query the Address table to get the address details of the user
+    user = Customer.query.get(customer_id)
+    if user:
+        address = Address.query.get(user.address_id)
+        city_info = City.query.get(address.city_id)
+
+        result = {
             'customer_id': user.customer_id,
+            'store_id': user.store_id,
             'first_name': user.first_name,
             'last_name': user.last_name,
             'email': user.email,
-            'address': user.address,
-            'postal_code': user.postal_code,
-            'phone': user.phone,
-            'rental_count': user.rental_count,
+            'address_id': address.address_id,
+            'address': address.address,
+            'address2': address.address2,
+            'district': address.district,
+            'city': city_info.city,
+            'postal_code': address.postal_code,
+            'phone': address.phone,
+            'last_update': address.last_update,
             'rented_dvds': rented_dvds
         }
-        return jsonify(user_details)
-    else:
-        return jsonify({'message': 'User not found'}), 404
-
+        return jsonify(result)
+    return jsonify({'message': 'User not found or no rented DVDs'}), 404
 
 
 
@@ -394,13 +410,12 @@ def user(customer_id):
 
 
 
-#updatea user
-from flask import jsonify, request
-
 @app.route('/userupdate/<customer_id>', methods=['PUT'])
 def userupdate(customer_id):
+    # Query the Customer table to get details of the specified customer
     user = Customer.query.get(customer_id)
     
+    # Return 404 if user is not found
     if not user:
         return jsonify({'message': 'Customer not found'}), 404
 
@@ -410,58 +425,89 @@ def userupdate(customer_id):
     user.email = request.json.get('email', user.email)
     user.store_id = 1
 
-    # Update address details if provided
-    address_data = request.json.get('address')
-    if address_data:
-        address = Address.query.get(user.address_id)
-        if address:
-            address.address = address_data.get('address', address.address)
-            address.address2 = address_data.get('address2', address.address2)
-            address.district = address_data.get('district', address.district)
-            
-            # Check if city name is provided in the request
-            city_name = address_data.get('city')
-            if city_name:
-                # Query the City table to get the city ID based on the city name
-                city = City.query.filter_by(city=city_name).first()
-                if city:
-                    address.city_id = city.city_id
-                else:
-                    # If city name not found, return an error response
-                    return jsonify({'message': 'City not found'}), 404
-            
-            address.postal_code = address_data.get('postal_code', address.postal_code)
-            address.phone = address_data.get('phone', address.phone)
-            
-            db.session.commit()
-            return jsonify({'message': 'User details updated successfully'}), 200
-        else:
-            return jsonify({'message': 'Address not found'}), 404
+    # Query the Address table to get the address details of the user
+    address = Address.query.get(user.address_id)
+    address.address = request.json.get('address', address.address)
+    address.address2 = request.json.get('address2', address.address2)
+    address.district = request.json.get('district', address.district)
     
+    # Update city information if provided in the request
+    city_name = request.json.get('city')
+    if city_name:
+        city = City.query.filter_by(city=city_name).first()
+        if city:
+            address.city_id = city.city_id
+
+    # Commit changes to the database
     db.session.commit()
+
     return jsonify({'message': 'User details updated successfully'}), 200
 
 
-# add a new user
-@app.route('/useradd',methods=['POST'])
+
+
+# Add a new user
+from datetime import datetime
+
+@app.route('/useradd', methods=['POST'])
 def useradd():
+    # Ensure the required fields are present in the request JSON
+    required_fields = ['first_name', 'last_name', 'email', 'address', 'address2', 'district', 'city', 'postal_code', 'phone']
+    if not all(field in request.json for field in required_fields):
+        return jsonify({'message': 'Missing required fields'}), 400
+    
+    # Extract data from the request JSON
     first_name = request.json['first_name']
     last_name = request.json['last_name']
+    email = request.json['email']
+    address = request.json['address']
+    address2 = request.json.get('address2', '')
+    district = request.json['district']
+    city_name = request.json['city']
+    postal_code = request.json['postal_code']
+    phone = request.json['phone']
 
-    customers = Customer(first_name,last_name)
-    db.session.add(customers)
+    # Query the City table to get the city ID based on the city name
+    city = City.query.filter_by(city=city_name).first()
+    if not city: 
+        return jsonify({'message': 'City not found'}), 404
+    
+    new_city = City(city=city_name, country_id=1)
+    db.session.add(new_city)
     db.session.commit()
 
-    return customer_schema.jsonify(customers)
+    # Create a new Address object and add it to the database
+    new_address = Address(address=address, address2=address2, district=district, city_id=city.city_id, postal_code=postal_code, phone=phone)
+    db.session.add(new_address)
+    db.session.commit()
 
-#delete a user
-@app.route('/userdelete/<customer_id>',methods=['DELETE'])
+    # Create a new Customer object and add it to the database
+    new_customer = Customer(first_name=first_name, last_name=last_name, email=email, address_id=new_address.id, store_id=1)
+    db.session.add(new_customer)
+    db.session.commit()
+
+    return jsonify({'message': 'User added successfully', 'user_id': new_customer.id}), 201
+
+# Delete a user
+@app.route('/userdelete/<customer_id>', methods=['DELETE'])
 def userdelete(customer_id):
-    user = Customer.query.get(customer_id)
-    db.session.delete(user)
-    db.session.commit()
+    try:
+        # Query the database to find the user by ID
+        user = Customer.query.get(customer_id)
+        
+        # If the user does not exist, return a 404 response
+        if not user:
+            return jsonify({'message': 'User not found'}), 404
 
-    return customer_schema.jsonify(user)
+        # Delete the user from the database
+        db.session.delete(user)
+        db.session.commit()
+
+        return jsonify({'message': 'User deleted successfully'}), 200
+    except IntegrityError as e:
+        db.session.rollback()  # Rollback the transaction to avoid leaving the database in an inconsistent state
+        return jsonify({'error': 'Could not delete user. Associated records exist.'}), 500
+
 
 
 
